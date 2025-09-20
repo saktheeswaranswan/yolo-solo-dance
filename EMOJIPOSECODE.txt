@@ -1,0 +1,183 @@
+let posePlayer;
+
+const fps = 30;
+const poseWidth = 640;
+const poseHeight = 480;
+const skeletonEdges = [
+  [5, 7], [7, 9], [6, 8], [8, 10],
+  [11, 13], [13, 15], [12, 14], [14, 16],
+  [5, 6], [11, 12], [5, 11], [6, 12]
+];
+
+function preload() {
+  posePlayer = new PosePlayer('Hghdugfy.mp4', 'salambalasalambala.json');
+}
+
+function setup() {
+  createCanvas(1280, 720);
+  frameRate(fps);
+  posePlayer.setup();
+}
+
+function draw() {
+  background(0);
+  posePlayer.update();
+  posePlayer.display();
+}
+
+function keyPressed() {
+  posePlayer.handleKey(key.toUpperCase());
+}
+
+// ----------------- PosePlayer Class -----------------
+class PosePlayer {
+  constructor(videoFile, poseJSONFile) {
+    this.videoFile = videoFile;
+    this.poseJSONFile = poseJSONFile;
+
+    this.poseData = [];
+    this.poseMap = {};
+    this.video = null;
+
+    this.poseTime = 0;
+    this.playing = false;
+    this.showPose = true;
+    this.playbackRate = 1;
+
+    this.scaleCycle = [1, 0.75, 0.5, 0.25];
+    this.scaleIndex = 0;
+    this.scaleFactor = 1;
+    this.offsetX = 0;
+    this.offsetY = 0;
+    this.isDragging = false;
+    this.dragStartX = 0;
+    this.dragStartY = 0;
+
+    this.speedInput = null;
+  }
+
+  setup() {
+    this.poseData = loadJSON(this.poseJSONFile, data => this.preparePoseMap(data));
+    this.video = createVideo([this.videoFile], () => {
+      this.video.hide();
+      this.video.volume(0);
+      this.video.elt.muted = true;
+    });
+
+    this.setupControls();
+  }
+
+  preparePoseMap(data) {
+    (Array.isArray(data) ? data : Object.values(data)).forEach(entry => {
+      if (!this.poseMap[entry.frame_id]) this.poseMap[entry.frame_id] = [];
+      this.poseMap[entry.frame_id].push(entry.keypoints);
+    });
+    this.play(); // auto-start
+  }
+
+  update() {
+    if (this.playing) {
+      this.poseTime += (deltaTime / 1000) * this.playbackRate;
+
+      if (this.video.time() !== this.poseTime) this.video.time(this.poseTime);
+
+      const lastFrame = Math.max(...Object.keys(this.poseMap).map(Number)) / fps;
+      if (this.poseTime >= lastFrame) {
+        this.poseTime = lastFrame;
+        this.pause();
+      }
+    }
+  }
+
+  display() {
+    if (this.video.elt.readyState >= 2) image(this.video, 0, 0, width, height);
+    if (this.showPose) this.drawPoseOverlay();
+  }
+
+  drawPoseOverlay() {
+    const frameIndex = floor(this.poseTime * fps);
+    const persons = this.poseMap[frameIndex] || [];
+
+    push();
+    translate(this.offsetX, this.offsetY);
+    scale(this.scaleFactor);
+
+    const scaleX = width / poseWidth;
+    const scaleY = height / poseHeight;
+
+    // Draw skeleton lines only if both keypoints exist
+    stroke(255, 255, 0);
+    strokeWeight(4 / this.scaleFactor);
+    persons.forEach(kpts => {
+      skeletonEdges.forEach(([i, j]) => {
+        const a = kpts[i];
+        const b = kpts[j];
+        if (a && b) line(a[0]*scaleX, a[1]*scaleY, b[0]*scaleX, b[1]*scaleY);
+      });
+    });
+
+    // Draw keypoints only if they exist
+    noStroke();
+    fill(255, 0, 0);
+    persons.forEach(kpts => {
+      kpts.forEach((p, idx) => {
+        if (p) ellipse(p[0]*scaleX, p[1]*scaleY, 12, 12);
+        if (idx === 0 && p) text('😂', p[0]*scaleX, p[1]*scaleY - 20);
+      });
+    });
+
+    pop();
+  }
+
+  setupControls() {
+    const yBase = height - 60;
+
+    createButton('Play').position(20, yBase).mousePressed(() => this.play());
+    createButton('Pause').position(100, yBase).mousePressed(() => this.pause());
+    createButton('Stop').position(180, yBase).mousePressed(() => this.stop());
+    createButton('Scale').position(260, yBase).mousePressed(() => {
+      this.scaleIndex = (this.scaleIndex + 1) % this.scaleCycle.length;
+      this.scaleFactor = this.scaleCycle[this.scaleIndex];
+    });
+
+    createSpan('Speed:').position(340, yBase + 5);
+    this.speedInput = createInput('1.0').position(400, yBase).size(50);
+    this.speedInput.input(() => {
+      const val = parseFloat(this.speedInput.value());
+      this.playbackRate = isNaN(val) ? 1 : val;
+      if (this.video) this.video.speed(this.playbackRate);
+    });
+  }
+
+  play() { this.playing = true; this.video.play(); this.video.speed(this.playbackRate); }
+  pause() { this.playing = false; this.video.pause(); }
+  stop() { this.playing = false; this.poseTime = 0; this.video.pause(); this.video.time(0); }
+
+  handleKey(k) {
+    if (k === 'T') this.showPose = !this.showPose;
+    if (k === 'P') {
+      this.playing = !this.playing;
+      if (this.playing) this.video.play(); else this.video.pause();
+    }
+  }
+
+  mousePressed() {
+    if (this.showPose) {
+      this.isDragging = true;
+      this.dragStartX = mouseX - this.offsetX;
+      this.dragStartY = mouseY - this.offsetY;
+    }
+  }
+  mouseDragged() {
+    if (this.isDragging) {
+      this.offsetX = mouseX - this.dragStartX;
+      this.offsetY = mouseY - this.dragStartY;
+    }
+  }
+  mouseReleased() { this.isDragging = false; }
+}
+
+// Global mouse events
+function mousePressed() { posePlayer.mousePressed(); }
+function mouseDragged() { posePlayer.mouseDragged(); }
+function mouseReleased() { posePlayer.mouseReleased(); }
