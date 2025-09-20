@@ -1,0 +1,200 @@
+let poseData = [];
+let poseMap = {};
+let mainVideo, video2;
+let poseTime = 0;
+let showPose = true;
+let scaleCycle = [1.0, 0.75, 0.5, 0.25];
+let scaleIndex = 0;
+let scaleFactor = scaleCycle[scaleIndex];
+let offsetX = 0, offsetY = 0;
+let isDragging = false, dragStartX, dragStartY;
+const fps = 30;
+const skeletonEdges = [
+  [5, 7], [7, 9], [6, 8], [8, 10],
+  [11, 13], [13, 15], [12, 14], [14, 16],
+  [5, 6], [11, 12], [5, 11], [6, 12]
+];
+let posePlaying = false;
+let posePlaybackRate = 1;
+let sliderMain, sliderSecond, speedInput;
+
+function preload() {
+  poseData = loadJSON('salambalasalambala.json');
+  mainVideo = createVideo(['gcvjcncmcnchcb.mp4']);
+  video2 = createVideo(['ghhgghh.mp4']);
+}
+
+function setup() {
+  createCanvas(1280, 920);
+  frameRate(fps);
+
+  mainVideo.hide();
+  video2.hide();
+
+  mainVideo.volume(0);
+  mainVideo.elt.muted = true;
+  mainVideo.loop();
+
+  video2.volume(0);
+  video2.elt.muted = true;
+  video2.loop();
+
+  (Array.isArray(poseData) ? poseData : Object.values(poseData)).forEach(entry => {
+    if (!poseMap[entry.frame_id]) poseMap[entry.frame_id] = [];
+    poseMap[entry.frame_id].push(entry.keypoints);
+  });
+
+  const yBase = height - 120;
+
+  // Main Video Controls
+  createButton('Play Main').position(20, yBase).mousePressed(() => mainVideo.play());
+  createButton('Pause Main').position(100, yBase).mousePressed(() => mainVideo.pause());
+  createButton('Stop Main').position(180, yBase).mousePressed(() => { mainVideo.pause(); mainVideo.time(0); });
+  createButton('<< -10s Main').position(260, yBase).mousePressed(() => mainVideo.time(max(0, mainVideo.time() - 10)));
+  createButton('+10s Main').position(360, yBase).mousePressed(() => mainVideo.time(min(mainVideo.duration(), mainVideo.time() + 10)));
+
+  // Second Video Controls
+  createButton('Play Second').position(620, yBase).mousePressed(() => video2.play());
+  createButton('Pause Second').position(720, yBase).mousePressed(() => video2.pause());
+  createButton('Stop Second').position(820, yBase).mousePressed(() => { video2.pause(); video2.time(0); });
+  createButton('<< -10s Second').position(920, yBase).mousePressed(() => video2.time(max(0, video2.time() - 10)));
+  createButton('+10s Second').position(1040, yBase).mousePressed(() => video2.time(min(video2.duration(), video2.time() + 10)));
+
+  mainVideo.elt.onloadedmetadata = () => {
+    sliderMain = createSlider(0, mainVideo.duration(), 0, 0.01)
+      .position(20, yBase + 30).style('width', '600px')
+      .input(() => mainVideo.time(sliderMain.value()));
+  };
+
+  video2.elt.onloadedmetadata = () => {
+    sliderSecond = createSlider(0, video2.duration(), 0, 0.01)
+      .position(660, yBase + 30).style('width', '600px')
+      .input(() => video2.time(sliderSecond.value()));
+  };
+
+  // Pose Controls
+  const poseY = yBase + 70;
+  createButton('Play Pose').position(20, poseY).mousePressed(() => {
+    posePlaying = true;
+    mainVideo.pause();
+  });
+  createButton('Pause Pose').position(100, poseY).mousePressed(() => posePlaying = false);
+  createButton('Stop Pose').position(180, poseY).mousePressed(() => {
+    posePlaying = false;
+    poseTime = 0;
+    mainVideo.pause();
+  });
+  createButton('<< -10000s Pose').position(260, poseY).mousePressed(() => {
+    poseTime = max(poseTime - 10, 0);
+    mainVideo.pause();
+  });
+  createButton('+10000s Pose').position(360, poseY).mousePressed(() => {
+    poseTime = min(poseTime + 10, mainVideo.duration());
+    mainVideo.pause();
+  });
+
+  createSpan('Speed:').position(460, poseY + 5);
+  speedInput = createInput('1.0').position(520, poseY).size(40);
+  speedInput.input(() => {
+    const val = parseFloat(speedInput.value());
+    posePlaybackRate = isNaN(val) ? 1 : val;
+  });
+}
+
+function draw() {
+  background(0);
+
+  if (mainVideo.elt.readyState >= 2) {
+    image(mainVideo, 0, 0, 640, 720);
+    if (sliderMain) sliderMain.value(mainVideo.time());
+  }
+
+  if (video2.elt.readyState >= 2) {
+    image(video2, 640, 0, 640, 720);
+    if (sliderSecond) sliderSecond.value(video2.time());
+  }
+
+  if (posePlaying) {
+    poseTime += (deltaTime / 1000) * posePlaybackRate;
+    if (poseTime >= mainVideo.duration()) {
+      poseTime = mainVideo.duration();
+      posePlaying = false;
+    }
+  } else if (!mainVideo.elt.paused) {
+    poseTime = mainVideo.time();
+  }
+
+  if (mainVideo.elt.paused) {
+    mainVideo.time(poseTime);
+  }
+
+  if (showPose) drawPoseOverlay();
+}
+
+function drawPoseOverlay() {
+  const frameIndex = floor(poseTime * fps);
+  const persons = poseMap[frameIndex] || [];
+  const scaleX = 640 / (mainVideo.elt.videoWidth || 1);
+  const scaleY = 720 / (mainVideo.elt.videoHeight || 1);
+
+  push();
+  translate(offsetX, offsetY);
+  scale(scaleFactor);
+
+  // Keypoints
+  noStroke();
+  fill(255, 0, 0);
+  persons.forEach(kpts => {
+    kpts.forEach(p => {
+      if (p) circle(p[0] * scaleX, p[1] * scaleY, 20);  // Increased from 10 to 20
+    });
+  });
+
+  // Skeleton lines
+  stroke(255, 255, 0);
+  strokeWeight(6 / scaleFactor);
+  skeletonEdges.forEach(([i, j]) => {
+    persons.forEach(kpts => {
+      let a = kpts[i], b = kpts[j];
+      if (a && b) line(a[0] * scaleX, a[1] * scaleY, b[0] * scaleX, b[1] * scaleY);
+    });
+  });
+
+  pop();
+}
+
+function mousePressed() {
+  if (showPose) {
+    isDragging = true;
+    dragStartX = mouseX - offsetX;
+    dragStartY = mouseY - offsetY;
+  }
+}
+
+function mouseDragged() {
+  if (isDragging) {
+    offsetX = mouseX - dragStartX;
+    offsetY = mouseY - dragStartY;
+  }
+}
+
+function mouseReleased() {
+  isDragging = false;
+}
+
+function keyPressed() {
+  const k = key.toUpperCase();
+  if (k === 'T') {
+    showPose = !showPose;
+  } else if (k === 'B') {
+    scaleIndex = (scaleIndex + 1) % scaleCycle.length;
+    scaleFactor = scaleCycle[scaleIndex];
+    console.log(`Pose Scale: ${scaleFactor}`);
+  } else if (k === 'F') {
+    poseTime = min(poseTime + 10, mainVideo.duration());
+    mainVideo.pause();
+  } else if (k === 'R') {
+    poseTime = max(poseTime - 10, 0);
+    mainVideo.pause();
+  }
+}
