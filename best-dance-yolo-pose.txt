@@ -1,0 +1,269 @@
+let posePlayer;
+const fps = 30;
+const poseWidth = 640;
+const poseHeight = 480;
+
+// Skeleton edges
+const skeletonEdges = [
+  [5, 7], [7, 9], [6, 8], [8, 10],
+  [11, 13], [13, 15], [12, 14], [14, 16],
+  [5, 6], [11, 12], [5, 11], [6, 12]
+];
+
+function preload() {
+  posePlayer = new PosePlayer('jhsgfysgfe.mp4', 'jallikattu.json');
+}
+
+function setup() {
+  createCanvas(1280, 720);
+  frameRate(fps);
+  posePlayer.setup();
+}
+
+function draw() {
+  background(0);
+  posePlayer.update();
+  posePlayer.display();
+}
+
+function keyPressed() {
+  posePlayer.handleKey(key.toUpperCase());
+}
+
+// ---------------- PosePlayer Class ----------------
+class PosePlayer {
+  constructor(videoFile, poseJSONFile) {
+    this.videoFile = videoFile;
+    this.poseJSONFile = poseJSONFile;
+
+    this.poseMap = {};
+    this.video = null;
+    this.poseTime = 0;
+    this.playing = false;
+    this.showPose = true;
+    this.playbackRate = 1;
+
+    this.scaleCycle = [1, 0.75, 0.5, 0.25];
+    this.scaleIndex = 0;
+    this.scaleFactor = 1;
+
+    this.pointSizeCycle = [6, 12, 18, 24, 36];
+    this.pointSizeIndex = 1;
+    this.pointSize = this.pointSizeCycle[this.pointSizeIndex];
+    this.headEmojiSize = 150;
+
+    this.offsetX = 0;
+    this.offsetY = 0;
+    this.isDragging = false;
+    this.dragStartX = 0;
+    this.dragStartY = 0;
+
+    this.speedInput = null;
+    this.isLoaded = false;
+  }
+
+  setup() {
+    this.loadJSONData();
+    this.loadVideo();
+    this.setupControls();
+  }
+
+  loadJSONData() {
+    loadJSON(this.poseJSONFile, data => {
+      this.preparePoseMap(data);
+      this.checkIfLoaded();
+    }, err => console.error("Failed to load JSON:", err));
+  }
+
+  loadVideo() {
+    this.video = createVideo([this.videoFile], () => {
+      this.video.hide();
+      this.video.volume(0);
+      this.video.elt.muted = true;
+      this.video.speed(this.playbackRate);
+      this.checkIfLoaded();
+    }, err => console.error("Failed to load video:", err));
+  }
+
+  checkIfLoaded() {
+    if (this.video && Object.keys(this.poseMap).length > 0) {
+      this.isLoaded = true;
+      this.play();
+    }
+  }
+
+  preparePoseMap(data) {
+    const entries = Array.isArray(data) ? data : Object.values(data);
+    entries.forEach(entry => {
+      const frameId = Number(entry.frame_id);
+      if (!this.poseMap[frameId]) this.poseMap[frameId] = [];
+      this.poseMap[frameId].push(entry.keypoints);
+    });
+  }
+
+  update() {
+    if (!this.isLoaded || !this.playing) return;
+
+    this.poseTime += (deltaTime / 1000) * this.playbackRate;
+
+    if (this.video && this.video.elt.readyState >= 2) {
+      const dur = this.video.elt.duration || Infinity;
+      if (this.poseTime >= dur) {
+        this.poseTime = dur;
+        this.stop();
+      } else if (abs(this.video.time() - this.poseTime) > 0.1) {
+        this.video.time(this.poseTime);
+      }
+    }
+
+    const lastFrameNum = Math.max(...Object.keys(this.poseMap).map(Number));
+    const lastTime = lastFrameNum / fps;
+    if (this.poseTime >= lastTime) this.stop();
+  }
+
+  display() {
+    if (!this.isLoaded) {
+      this.showLoading();
+      return;
+    }
+
+    const videoAspect = poseWidth / poseHeight;
+    const targetHeight = height;
+    const targetWidth = targetHeight * videoAspect;
+
+    if (this.video && this.video.elt.readyState >= 2) {
+      image(this.video, 0, 0, targetWidth, targetHeight);
+    }
+
+    if (this.showPose) {
+      this.drawPoseOverlay(targetWidth, targetHeight);
+    }
+  }
+
+  showLoading() {
+    push();
+    textSize(36);
+    fill(255);
+    textAlign(CENTER, CENTER);
+    text('Loading...', width / 2, height / 2);
+    pop();
+  }
+
+  drawPoseOverlay(videoW, videoH) {
+    const frameIndex = floor(this.poseTime * fps);
+    const persons = this.poseMap[frameIndex] || [];
+
+    push();
+    translate(this.offsetX, this.offsetY);
+    scale(this.scaleFactor);
+
+    const scaleX = videoW / poseWidth;
+    const scaleY = videoH / poseHeight;
+
+    persons.forEach(kpts => {
+      // Skeleton edges in bright yellow
+      skeletonEdges.forEach(([i, j]) => {
+        const a = kpts[i], b = kpts[j];
+        if (a && b) {
+          stroke(255, 255, 0); // yellow
+          strokeWeight(max(3, 4 / this.scaleFactor));
+          line(a[0] * scaleX, a[1] * scaleY, b[0] * scaleX, b[1] * scaleY);
+        }
+      });
+
+      // Keypoints fully red
+      noStroke();
+      fill(255, 0, 0); // solid bright red
+      kpts.forEach((p, idx) => {
+        if (!p) return;
+        const x = p[0] * scaleX;
+        const y = p[1] * scaleY;
+        ellipse(x, y, this.pointSize);
+
+        // Head emoji
+        if (idx === 0) {
+          textSize(this.headEmojiSize);
+          fill(255); // white emoji
+          text('😂', x, y - this.headEmojiSize / 1.5);
+        }
+      });
+    });
+
+    pop();
+  }
+
+  setupControls() {
+    const yBase = height - 60;
+    createButton('Play').position(20, yBase).mousePressed(() => this.play());
+    createButton('Pause').position(100, yBase).mousePressed(() => this.pause());
+    createButton('Stop').position(180, yBase).mousePressed(() => this.stop());
+    createButton('Scale').position(260, yBase).mousePressed(() => this.cycleScale());
+    createSpan('Speed:').position(340, yBase + 5);
+    this.speedInput = createInput('1.0').position(400, yBase).size(50);
+    this.speedInput.input(() => this.setSpeed());
+  }
+
+  cycleScale() {
+    this.scaleIndex = (this.scaleIndex + 1) % this.scaleCycle.length;
+    this.scaleFactor = this.scaleCycle[this.scaleIndex];
+    this.pointSizeIndex = (this.pointSizeIndex + 1) % this.pointSizeCycle.length;
+    this.pointSize = this.pointSizeCycle[this.pointSizeIndex];
+  }
+
+  setSpeed() {
+    const val = parseFloat(this.speedInput.value());
+    this.playbackRate = isNaN(val) ? 1 : val;
+    if (this.video) this.video.speed(this.playbackRate);
+  }
+
+  play() {
+    this.playing = true;
+    if (this.video && this.video.elt.readyState >= 2) {
+      this.video.play();
+      this.video.speed(this.playbackRate);
+    }
+  }
+
+  pause() {
+    this.playing = false;
+    if (this.video) this.video.pause();
+  }
+
+  stop() {
+    this.playing = false;
+    this.poseTime = 0;
+    if (this.video) {
+      this.video.pause();
+      this.video.time(0);
+    }
+  }
+
+  handleKey(k) {
+    if (k === 'T') this.showPose = !this.showPose;
+    if (k === 'P') this.playing ? this.pause() : this.play();
+  }
+
+  mousePressed() {
+    if (this.showPose) {
+      this.isDragging = true;
+      this.dragStartX = mouseX - this.offsetX;
+      this.dragStartY = mouseY - this.offsetY;
+    }
+  }
+
+  mouseDragged() {
+    if (this.isDragging) {
+      this.offsetX = mouseX - this.dragStartX;
+      this.offsetY = mouseY - this.dragStartY;
+    }
+  }
+
+  mouseReleased() {
+    this.isDragging = false;
+  }
+}
+
+// Global mouse events
+function mousePressed() { posePlayer.mousePressed(); }
+function mouseDragged() { posePlayer.mouseDragged(); }
+function mouseReleased() { posePlayer.mouseReleased(); }
